@@ -1,0 +1,513 @@
+// ==UserScript==
+// @name         [LC x WD] ID Pantau (Cloud Sync + Livechat Announce)
+// @namespace    http://tampermonkey.net/
+// @version      5.0.0
+// @description  Manajemen ID Pantau dengan Keterangan Kendala & Custom UI Modal
+// @author       Lord Ozai
+// @match        https://raj.1lg878-596l.com/adm/withdrawal
+// @match        https://raj.1lg878-596l.com/adm/withdrawal?bank_lists_id=*
+// @grant        GM_xmlhttpRequest
+// @connect      api.github.com
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    const GITHUB_TOKEN = "ghp_vWZkHIspToiHxcpsooz2gKlplDm5YJ2C7v7x"; // <<----- Rubah code "7x" menjadi "4r" 
+    const GIST_ID = "5efac8b8ec0587c41d6a9a9bbd724332";
+    const FILE_WATCHLIST = "watchlist_wd.json";
+    const FILE_PRIORITY = "priority_wd.json";
+
+    let IS_UPLOADING = false;
+    let PLAYED_ALARMS = new Set();
+
+    const AUDIO_ALERT = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-600.wav');
+
+    // Inject CSS Global & Modal
+    if (!document.getElementById('wd-custom-style')) {
+        const style = document.createElement('style');
+        style.id = 'wd-custom-style';
+        style.innerHTML = `
+            @keyframes blinker { 50% { opacity: 0.3; } }
+            .lc-tag:after { content: attr(data-text); }
+
+            /* Modal Styles */
+            #wd-modal-overlay { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.6); z-index: 10000; display: none; justify-content: center; align-items: center; backdrop-filter: blur(3px); }
+            .wd-modal-box { background: #1E272E; color: white; width: 450px; border-radius: 8px; padding: 20px; box-shadow: 0 10px 25px rgba(0,0,0,0.5); font-family: sans-serif; display: flex; flex-direction: column; max-height: 85vh; }
+            .wd-modal-header { font-size: 18px; font-weight: bold; margin-bottom: 15px; border-bottom: 1px solid #485460; padding-bottom: 10px; display: flex; justify-content: space-between; }
+            .wd-modal-list { flex-grow: 1; overflow-y: auto; background: #2F3640; border-radius: 5px; padding: 10px; margin-bottom: 15px; }
+            .wd-list-item { display: flex; justify-content: space-between; align-items: center; background: #353b48; padding: 8px 10px; margin-bottom: 8px; border-radius: 4px; border-left: 4px solid #E67E22; }
+            .wd-list-item span { font-size: 13px; line-height: 1.4; }
+            .wd-list-item button { background: #e84118; color: white; border: none; padding: 4px 8px; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 11px; }
+            .wd-modal-form { display: flex; flex-direction: column; gap: 10px; background: #2F3640; padding: 12px; border-radius: 5px; }
+            .wd-modal-form input, .wd-modal-form select { width: 100%; padding: 8px; border-radius: 4px; border: 1px solid #718093; background: #353b48; color: white; outline: none; box-sizing: border-box; }
+            .wd-btn-add { background: #4cd137; color: white; border: none; padding: 10px; font-weight: bold; border-radius: 4px; cursor: pointer; }
+            .wd-btn-close { background: #7f8fa6; color: white; border: none; padding: 8px; font-weight: bold; border-radius: 4px; cursor: pointer; margin-top: 10px; }
+            .col-keterangan { width: 15%; text-align: left; }
+            .keterangan-cell { font-size: 12px; }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // ==========================================
+    // DATA STRUCTURE LOGIC
+    // ==========================================
+    // Watchlist kini berbentuk Object: { "USER1": "Alasan A", "USER2": "Alasan B" }
+    function getWatchlist() {
+        const saved = localStorage.getItem('WATCHLIST_DATA');
+        if (!saved) return {};
+        try {
+            let parsed = JSON.parse(saved);
+            // Backward compatibility: Jika data lama berupa Array biasa
+            if (Array.isArray(parsed)) {
+                let obj = {};
+                parsed.forEach(id => { obj[id.toUpperCase()] = "DALAM PANTAUAN"; });
+                return obj;
+            }
+            return parsed;
+        } catch(e) { return {}; }
+    }
+
+    function getPriorityList() {
+        const saved = localStorage.getItem('PRIORITY_DATA');
+        return saved ? JSON.parse(saved).map(u => u.toUpperCase()) : [];
+    }
+
+    // ==========================================
+    // CLOUD SYNC & FETCH LOGIC
+    // ==========================================
+    function fetchCloudData() {
+        if (!GIST_ID || !GITHUB_TOKEN || IS_UPLOADING) return;
+
+        GM_xmlhttpRequest({
+            method: "GET",
+            url: `https://api.github.com/gists/${GIST_ID}`,
+            headers: {
+                "Authorization": `token ${GITHUB_TOKEN}`,
+                "Accept": "application/vnd.github.v3+json",
+                "Cache-Control": "no-cache"
+            },
+            onload: function(response) {
+                if (IS_UPLOADING || response.status !== 200) return;
+
+                try {
+                    const data = JSON.parse(response.responseText);
+                    let needHighlight = false;
+
+                    if (data.files && data.files[FILE_WATCHLIST]) {
+                        const parsedCloud = JSON.parse(data.files[FILE_WATCHLIST].content);
+                        let cloudWatchlist = {};
+
+                        // Parse safely (handle old Array format in cloud)
+                        if (Array.isArray(parsedCloud)) {
+                            parsedCloud.forEach(id => { cloudWatchlist[id.toUpperCase()] = "DALAM PANTAUAN"; });
+                        } else {
+                            for (let key in parsedCloud) {
+                                cloudWatchlist[key.toUpperCase()] = parsedCloud[key];
+                            }
+                        }
+
+                        if (localStorage.getItem('WATCHLIST_DATA') !== JSON.stringify(cloudWatchlist)) {
+                            localStorage.setItem('WATCHLIST_DATA', JSON.stringify(cloudWatchlist));
+                            needHighlight = true;
+                        }
+                    }
+
+                    if (data.files && data.files[FILE_PRIORITY]) {
+                        const cloudPriority = JSON.parse(data.files[FILE_PRIORITY].content).map(id => id.toUpperCase());
+                        if (localStorage.getItem('PRIORITY_DATA') !== JSON.stringify(cloudPriority)) {
+                            localStorage.setItem('PRIORITY_DATA', JSON.stringify(cloudPriority));
+                            needHighlight = true;
+                        }
+                    }
+
+                    if (needHighlight) {
+                        highlightWatchlist();
+                        renderModalList(); // Update UI modal if open
+                    }
+
+                } catch(e) {
+                    console.error("Gagal parse data cloud:", e);
+                }
+            }
+        });
+    }
+
+    function saveCloudData(fileName, cleanData) {
+        if (!GIST_ID || !GITHUB_TOKEN) return;
+        IS_UPLOADING = true;
+
+        const bodyData = {
+            description: "Updated via Tampermonkey v5.0.0",
+            files: {}
+        };
+        bodyData.files[fileName] = { content: JSON.stringify(cleanData) };
+
+        GM_xmlhttpRequest({
+            method: "PATCH",
+            url: `https://api.github.com/gists/${GIST_ID}`,
+            headers: {
+                "Authorization": `token ${GITHUB_TOKEN}`,
+                "Accept": "application/vnd.github.v3+json",
+                "Content-Type": "application/json"
+            },
+            data: JSON.stringify(bodyData),
+            onload: function(response) {
+                IS_UPLOADING = false;
+                if (response.status === 200) {
+                    console.log(`Cloud Sync Success [${fileName}]`);
+                }
+            },
+            onerror: function() { IS_UPLOADING = false; }
+        });
+    }
+
+    fetchCloudData();
+    setInterval(fetchCloudData, 7000);
+
+    // ==========================================
+    // INTERFACE / UI MANAGEMENT (MODAL)
+    // ==========================================
+    function createModalUI() {
+        if(document.getElementById('wd-modal-overlay')) return;
+
+        const modalHTML = `
+            <div id="wd-modal-overlay">
+                <div class="wd-modal-box">
+                    <div class="wd-modal-header">
+                        <span>⚙️ Kelola ID Bermasalah</span>
+                        <span id="wd-total-id" style="font-size: 14px; font-weight: normal;">Total: 0 ID</span>
+                    </div>
+
+                    <div class="wd-modal-list" id="wd-modal-list-container">
+                        <!-- List ID Injected Here -->
+                    </div>
+
+                    <div class="wd-modal-form">
+                        <input type="text" id="wd-input-id" placeholder="Masukkan ID (Gunakan koma untuk lebih dari 1 ID)">
+                        <select id="wd-input-reason">
+                            <option value="Nama Rekening Kurang Lengkap">Nama Rekening Kurang Lengkap</option>
+                            <option value="Syarat TO Belum Tercapai">Syarat TO Belum Tercapai</option>
+                            <option value="DEPO langsung WD">DEPO langsung WD</option>
+                            <option value="Nomer Rekening Tidak Valid">Nomer Rekening Tidak Valid</option>
+                            <option value="Menunggu Konfirmasi LC">Menunggu Konfirmasi LC</option>
+                            <option value="MANUAL">✏️ -- Tambah Keterangan --</option>
+                        </select>
+                        <input type="text" id="wd-input-custom-reason" placeholder="Ketik keterangan khusus..." style="display:none;">
+                        <button class="wd-btn-add" id="wd-btn-add">TAMBAHKAN KE PANTAUAN</button>
+                    </div>
+
+                    <button class="wd-btn-close" id="wd-btn-close">TUTUP</button>
+                </div>
+            </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+
+        // Bind Events Dropdown Manual
+        document.getElementById('wd-input-reason').addEventListener('change', function(e) {
+            const customInput = document.getElementById('wd-input-custom-reason');
+            if(e.target.value === 'MANUAL') {
+                customInput.style.display = 'block';
+                customInput.focus();
+            } else {
+                customInput.style.display = 'none';
+                customInput.value = '';
+            }
+        });
+
+        // Bind Close Button
+        document.getElementById('wd-btn-close').addEventListener('click', () => {
+            document.getElementById('wd-modal-overlay').style.display = 'none';
+        });
+
+        // Bind Add Button
+        document.getElementById('wd-btn-add').addEventListener('click', () => {
+            const inputIDs = document.getElementById('wd-input-id').value;
+            if(!inputIDs.trim()) return alert("ID tidak boleh kosong!");
+
+            let reason = document.getElementById('wd-input-reason').value;
+            if(reason === 'MANUAL') {
+                reason = document.getElementById('wd-input-custom-reason').value.trim();
+                if(!reason) reason = "DALAM PANTAUAN";
+            }
+
+            let ids = inputIDs.split(',').map(i => i.trim().toUpperCase()).filter(i => i !== "");
+            let currentWatchlist = getWatchlist();
+
+            ids.forEach(id => {
+                currentWatchlist[id] = reason; // Add or Update reason
+            });
+
+            // Save & Render
+            localStorage.setItem('WATCHLIST_DATA', JSON.stringify(currentWatchlist));
+            saveCloudData(FILE_WATCHLIST, currentWatchlist);
+
+            document.getElementById('wd-input-id').value = ""; // Clear input
+            renderModalList();
+            highlightWatchlist();
+        });
+    }
+
+    // Fungsi Render Daftar ID di Dalam Modal
+    function renderModalList() {
+        const container = document.getElementById('wd-modal-list-container');
+        const counter = document.getElementById('wd-total-id');
+        if(!container) return;
+
+        const watchlist = getWatchlist();
+        const keys = Object.keys(watchlist);
+
+        counter.innerText = `Total: ${keys.length} ID`;
+        container.innerHTML = '';
+
+        if(keys.length === 0) {
+            container.innerHTML = '<div style="text-align:center; color:#7f8fa6; margin-top:20px;">Tidak ada ID dalam pantauan</div>';
+            return;
+        }
+
+        keys.forEach(id => {
+            const row = document.createElement('div');
+            row.className = 'wd-list-item';
+
+            const textDiv = document.createElement('div');
+            textDiv.innerHTML = `<strong>${id}</strong><br><span style="color:#f39c12;">Ket: ${watchlist[id]}</span>`;
+
+            const btnDel = document.createElement('button');
+            btnDel.innerText = "❌ HAPUS";
+            btnDel.onclick = function() {
+                let curr = getWatchlist();
+                delete curr[id];
+                localStorage.setItem('WATCHLIST_DATA', JSON.stringify(curr));
+                saveCloudData(FILE_WATCHLIST, curr);
+                renderModalList();
+                highlightWatchlist();
+            };
+
+            row.appendChild(textDiv);
+            row.appendChild(btnDel);
+            container.appendChild(row);
+        });
+    }
+
+    function createControlPanel() {
+        createModalUI(); // Initialize Modal HTML
+        if (document.getElementById('wd-control-panel')) return;
+
+        const cardHeaders = document.querySelectorAll('.card-header, .box-header, .panel-heading');
+        let targetHeader = null;
+
+        for (let header of cardHeaders) {
+            if (header.textContent.includes('Withdrawal Baru')) {
+                targetHeader = header;
+                break;
+            }
+        }
+
+        if (!targetHeader) {
+            const table = document.querySelector('table');
+            if (table && table.parentElement) {
+                const parent = table.closest('.card, .box, .panel') || table.parentElement;
+                targetHeader = parent.querySelector('.card-header, .box-header, div[class*="header"]');
+            }
+        }
+
+        const panelTop = document.createElement('div');
+        panelTop.id = 'wd-control-panel-top';
+        panelTop.style = `display: flex; margin-left: auto;`;
+
+        const btnLC = document.createElement('button');
+        btnLC.innerHTML = '📢 LiveChat: ID Priority';
+        btnLC.style = `padding: 6px 12px; background: #E67E22; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: bold; font-size: 13px; box-shadow: 0 2px 4px rgba(0,0,0,0.15);`;
+        btnLC.onclick = function() {
+            const input = prompt("MASUKKAN ID dari LIVECHAT (Lepas Pantau / Minta WD Cepat):\n\n*Gunakan koma (,) Jika lebih dari 1 ID");
+            if (input) {
+                let items = input.split(',').map(i => i.trim().toUpperCase());
+                let currentPriority = getPriorityList();
+                let newPriority = [...new Set([...currentPriority, ...items])];
+
+                localStorage.setItem('PRIORITY_DATA', JSON.stringify(newPriority));
+                highlightWatchlist();
+                saveCloudData(FILE_PRIORITY, newPriority);
+                alert("ID Berhasil dikirim ke anak WD!");
+            }
+        };
+
+        panelTop.appendChild(btnLC);
+
+        if (targetHeader) {
+            targetHeader.style.display = 'flex';
+            targetHeader.style.justifyContent = 'space-between';
+            targetHeader.style.alignItems = 'center';
+            targetHeader.appendChild(panelTop);
+        } else {
+            panelTop.style = `position: fixed; bottom: 70px; right: 20px; z-index: 9999;`;
+            document.body.appendChild(panelTop);
+        }
+
+        const panelBottom = document.createElement('div');
+        panelBottom.id = 'wd-control-panel';
+        panelBottom.style = `position: fixed; bottom: 20px; right: 20px; z-index: 9999;`;
+
+        const btnWD = document.createElement('button');
+        btnWD.innerHTML = '⚙️ Kelola ID Bermasalah';
+        btnWD.style = `padding: 10px 15px; background: #05203D; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.2);`;
+
+        // Membuka Custom Modal Alih-alih menggunakan prompt()
+        btnWD.onclick = function() {
+            renderModalList();
+            document.getElementById('wd-modal-overlay').style.display = 'flex';
+        };
+
+        panelBottom.appendChild(btnWD);
+        document.body.appendChild(panelBottom);
+    }
+
+    // ==========================================
+    // HIGHLIGHT & INJEKSI KOLOM KETERANGAN
+    // ==========================================
+    function injectKeteranganColumn() {
+        const table = document.querySelector('table');
+        if (!table) return;
+
+        // 1. Tambah Header KETERANGAN jika belum ada (Di Samping Sisa Waktu)
+        const theadTr = table.querySelector('thead tr');
+        if (theadTr && !theadTr.querySelector('.col-keterangan')) {
+            const th = document.createElement('th');
+            th.className = 'col-keterangan';
+            th.innerText = 'KETERANGAN';
+            theadTr.appendChild(th);
+        }
+
+        // 2. Tambah Sel (TD) di setiap baris
+        const rows = table.querySelectorAll('tbody tr');
+        rows.forEach(row => {
+            // Lewati baris kosong / "Tidak ada data"
+            if (row.cells.length < 5) return;
+
+            if (!row.querySelector('.keterangan-cell')) {
+                const td = document.createElement('td');
+                td.className = 'keterangan-cell';
+                td.style.fontWeight = 'bold';
+                td.innerText = '-'; // Default kosong
+                row.appendChild(td);
+            }
+        });
+    }
+
+    function highlightWatchlist() {
+        injectKeteranganColumn(); // Pastikan kolom keterangan sudah terbentuk
+
+        const WATCHLIST_OBJ = getWatchlist();
+        const WATCHLIST_IDS = Object.keys(WATCHLIST_OBJ);
+        const PRIORITY_LIST = getPriorityList();
+        const rows = document.querySelectorAll('table tbody tr');
+
+        rows.forEach((row) => {
+            if (row.cells.length < 5) return; // Ignore empty rows
+
+            const usernameCell = row.cells[2];
+            const toBankCell = row.cells[4];
+            const actionCell = row.cells[6];
+            const ketCell = row.querySelector('.keterangan-cell');
+
+            if (!usernameCell || !toBankCell) return;
+
+            const currentUsername = usernameCell.textContent.replace(/⏳ PRIORITAS! \[<5m\]/g, '').trim().toUpperCase();
+
+            // ==========================================
+            // 1. KONDISI: ID PRIORITAS DARI LIVECHAT
+            // ==========================================
+            if (PRIORITY_LIST.includes(currentUsername)) {
+                if (usernameCell.style.backgroundColor !== '') {
+                    usernameCell.style.backgroundColor = '';
+                    usernameCell.style.color = '';
+                    usernameCell.style.fontWeight = '';
+                }
+
+                if (!PLAYED_ALARMS.has(currentUsername)) {
+                    AUDIO_ALERT.play().catch(e => console.log("Izin audio browser aktif"));
+                    PLAYED_ALARMS.add(currentUsername);
+                }
+
+                if (!usernameCell.querySelector('.lc-tag')) {
+                    const tag = document.createElement('span');
+                    tag.className = 'lc-tag';
+                    tag.setAttribute('data-text', '⏳ PRIORITAS! [<5m]');
+                    tag.style = 'margin-left: 8px; padding: 2px 6px; background: red; color: white; border-radius: 3px; font-size: 10px; font-weight: bold; display: inline-block; vertical-align: middle; animation: blinker 1s linear infinite; user-select: none; -webkit-user-select: none;';
+                    usernameCell.appendChild(tag);
+                }
+
+                if (actionCell && !actionCell.querySelector('.btn-done-wd')) {
+                    const btnDone = document.createElement('button');
+                    btnDone.className = 'btn-done-wd';
+                    btnDone.innerText = '✅ Selesai?';
+                    btnDone.style = 'margin-left: 5px; padding: 6px 10px; font-size: 12px; font-weight: bold; background: #2ECC71; color: white; border: none; border-radius: 4px; cursor: pointer; height: 32px; vertical-align: middle;';
+
+                    btnDone.onclick = function(e) {
+                        e.stopPropagation();
+
+                        if (confirm(`Hapus ${currentUsername} dari antrean prioritas < 5 menit ? \n\n*Konfirmasi kembali ke Team Livechat!`)) {
+                            let updatedPriority = getPriorityList().filter(id => id !== currentUsername);
+                            localStorage.setItem('PRIORITY_DATA', JSON.stringify(updatedPriority));
+                            PLAYED_ALARMS.delete(currentUsername);
+
+                            if(usernameCell.querySelector('.lc-tag')) usernameCell.querySelector('.lc-tag').remove();
+                            btnDone.remove();
+
+                            saveCloudData(FILE_PRIORITY, updatedPriority);
+                            highlightWatchlist();
+                        }
+                    };
+                    actionCell.appendChild(btnDone);
+                }
+            }
+            // ==========================================
+            // 2. KONDISI: ID DALAM PANTAUAN WD (WATCHLIST)
+            // ==========================================
+            else if (WATCHLIST_IDS.includes(currentUsername)) {
+                if (usernameCell.style.backgroundColor !== 'rgb(255, 204, 204)') {
+                    usernameCell.style.backgroundColor = '#ffcccc';
+                    usernameCell.style.color = '#cc0000';
+                    usernameCell.style.fontWeight = '900';
+                    toBankCell.style.color = '#ff0000';
+                    toBankCell.style.fontWeight = 'bold';
+                }
+
+                // Masukkan teks Keterangan/Alasan ke kolom Keterangan
+                if (ketCell) {
+                    ketCell.innerText = WATCHLIST_OBJ[currentUsername] || "DALAM PANTAUAN";
+                    ketCell.style.color = '#cc0000';
+                }
+
+                if(usernameCell.querySelector('.lc-tag')) usernameCell.querySelector('.lc-tag').remove();
+                if(actionCell && actionCell.querySelector('.btn-done-wd')) actionCell.querySelector('.btn-done-wd').remove();
+            }
+            // ==========================================
+            // 3. KONDISI: NORMAL / TIDAK ADA STATUS
+            // ==========================================
+            else {
+                if (usernameCell.style.backgroundColor !== '') {
+                    usernameCell.style.backgroundColor = '';
+                    usernameCell.style.color = '';
+                    usernameCell.style.fontWeight = '';
+                    toBankCell.style.color = '';
+                    toBankCell.style.fontWeight = '';
+
+                    if(usernameCell.querySelector('.lc-tag')) usernameCell.querySelector('.lc-tag').remove();
+                    if(actionCell && actionCell.querySelector('.btn-done-wd')) actionCell.querySelector('.btn-done-wd').remove();
+                }
+
+                // Kosongkan kolom Keterangan
+                if (ketCell) {
+                    ketCell.innerText = '-';
+                    ketCell.style.color = 'inherit';
+                }
+            }
+        });
+    }
+
+    createControlPanel();
+    setInterval(highlightWatchlist, 3000);
+    highlightWatchlist();
+})();
