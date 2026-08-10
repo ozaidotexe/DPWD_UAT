@@ -14,7 +14,7 @@
 (function() {
     'use strict';
 
-    const GITHUB_TOKEN = "ghp_vWZkHIspToiHxcpsooz2gKlplDm5YJ2C7v7x"; // <<----- Rubah code "7x" menjadi "4r" 
+    const GITHUB_TOKEN = "ghp_vWZkHIspToiHxcpsooz2gKlplDm5YJ2C8z7c"; // <<----- Rubah code "8z7c" menjadi "7v4r"
     const GIST_ID = "5efac8b8ec0587c41d6a9a9bbd724332";
     const FILE_WATCHLIST = "watchlist_wd.json";
     const FILE_PRIORITY = "priority_wd.json";
