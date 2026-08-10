@@ -1,7 +1,7 @@
 // ==UserScript==
-// @name         [LC x WD] ID Pantau (Cloud Sync + Livechat Announce)
+// @name         [LC x WD] ID Bermasalah (Cloud Sync + Livechat Announce)
 // @namespace    http://tampermonkey.net/
-// @version      5.0.0
+// @version      5.1.0
 // @description  Manajemen ID Pantau dengan Keterangan Kendala & Custom UI Modal
 // @author       Lord Ozai
 // @match        https://raj.1lg878-596l.com/adm/withdrawal
@@ -14,7 +14,7 @@
 (function() {
     'use strict';
 
-    const GITHUB_TOKEN = "ghp_vWZkHIspToiHxcpsooz2gKlplDm5YJ2C8z7c"; // <<----- Rubah code "8z7c" menjadi "7v4r"
+    const GITHUB_TOKEN = "ghp_vWZkHIspToiHxcpsooz2gKlplDm5YJ2C8c64"; // <<<------ Rubah "8c64" menjadi yang benar yaitu "7v4r"
     const GIST_ID = "5efac8b8ec0587c41d6a9a9bbd724332";
     const FILE_WATCHLIST = "watchlist_wd.json";
     const FILE_PRIORITY = "priority_wd.json";
@@ -53,13 +53,11 @@
     // ==========================================
     // DATA STRUCTURE LOGIC
     // ==========================================
-    // Watchlist kini berbentuk Object: { "USER1": "Alasan A", "USER2": "Alasan B" }
     function getWatchlist() {
         const saved = localStorage.getItem('WATCHLIST_DATA');
         if (!saved) return {};
         try {
             let parsed = JSON.parse(saved);
-            // Backward compatibility: Jika data lama berupa Array biasa
             if (Array.isArray(parsed)) {
                 let obj = {};
                 parsed.forEach(id => { obj[id.toUpperCase()] = "DALAM PANTAUAN"; });
@@ -99,7 +97,6 @@
                         const parsedCloud = JSON.parse(data.files[FILE_WATCHLIST].content);
                         let cloudWatchlist = {};
 
-                        // Parse safely (handle old Array format in cloud)
                         if (Array.isArray(parsedCloud)) {
                             parsedCloud.forEach(id => { cloudWatchlist[id.toUpperCase()] = "DALAM PANTAUAN"; });
                         } else {
@@ -124,7 +121,7 @@
 
                     if (needHighlight) {
                         highlightWatchlist();
-                        renderModalList(); // Update UI modal if open
+                        renderModalList();
                     }
 
                 } catch(e) {
@@ -139,7 +136,7 @@
         IS_UPLOADING = true;
 
         const bodyData = {
-            description: "Updated via Tampermonkey v5.0.0",
+            description: "Updated via Tampermonkey v5.1.0",
             files: {}
         };
         bodyData.files[fileName] = { content: JSON.stringify(cleanData) };
@@ -187,10 +184,10 @@
                     <div class="wd-modal-form">
                         <input type="text" id="wd-input-id" placeholder="Masukkan ID (Gunakan koma untuk lebih dari 1 ID)">
                         <select id="wd-input-reason">
-                            <option value="Nama Rekening Kurang Lengkap">Nama Rekening Kurang Lengkap</option>
+                            <option value="Nama Rekening Kurang Lengkap/Tidak Sesuai">Nama Rekening Kurang Lengkap/Tidak Sesuai</option>
                             <option value="Syarat TO Belum Tercapai">Syarat TO Belum Tercapai</option>
+                            <option value="Belum Premium/Tidak Valid">Belum Premium/Rekening Tidak Valid</option>
                             <option value="DEPO langsung WD">DEPO langsung WD</option>
-                            <option value="Nomer Rekening Tidak Valid">Nomer Rekening Tidak Valid</option>
                             <option value="Menunggu Konfirmasi LC">Menunggu Konfirmasi LC</option>
                             <option value="MANUAL">✏️ -- Tambah Keterangan --</option>
                         </select>
@@ -204,7 +201,6 @@
         `;
         document.body.insertAdjacentHTML('beforeend', modalHTML);
 
-        // Bind Events Dropdown Manual
         document.getElementById('wd-input-reason').addEventListener('change', function(e) {
             const customInput = document.getElementById('wd-input-custom-reason');
             if(e.target.value === 'MANUAL') {
@@ -216,12 +212,10 @@
             }
         });
 
-        // Bind Close Button
         document.getElementById('wd-btn-close').addEventListener('click', () => {
             document.getElementById('wd-modal-overlay').style.display = 'none';
         });
 
-        // Bind Add Button
         document.getElementById('wd-btn-add').addEventListener('click', () => {
             const inputIDs = document.getElementById('wd-input-id').value;
             if(!inputIDs.trim()) return alert("ID tidak boleh kosong!");
@@ -236,20 +230,18 @@
             let currentWatchlist = getWatchlist();
 
             ids.forEach(id => {
-                currentWatchlist[id] = reason; // Add or Update reason
+                currentWatchlist[id] = reason;
             });
 
-            // Save & Render
             localStorage.setItem('WATCHLIST_DATA', JSON.stringify(currentWatchlist));
             saveCloudData(FILE_WATCHLIST, currentWatchlist);
 
-            document.getElementById('wd-input-id').value = ""; // Clear input
+            document.getElementById('wd-input-id').value = "";
             renderModalList();
             highlightWatchlist();
         });
     }
 
-    // Fungsi Render Daftar ID di Dalam Modal
     function renderModalList() {
         const container = document.getElementById('wd-modal-list-container');
         const counter = document.getElementById('wd-total-id');
@@ -291,7 +283,7 @@
     }
 
     function createControlPanel() {
-        createModalUI(); // Initialize Modal HTML
+        createModalUI();
         if (document.getElementById('wd-control-panel')) return;
 
         const cardHeaders = document.querySelectorAll('.card-header, .box-header, .panel-heading');
@@ -353,7 +345,6 @@
         btnWD.innerHTML = '⚙️ Kelola ID Bermasalah';
         btnWD.style = `padding: 10px 15px; background: #05203D; color: white; border: none; border-radius: 5px; cursor: pointer; font-weight: bold; box-shadow: 0 4px 6px rgba(0,0,0,0.2);`;
 
-        // Membuka Custom Modal Alih-alih menggunakan prompt()
         btnWD.onclick = function() {
             renderModalList();
             document.getElementById('wd-modal-overlay').style.display = 'flex';
@@ -370,33 +361,30 @@
         const table = document.querySelector('table');
         if (!table) return;
 
-        // 1. Tambah Header KETERANGAN jika belum ada (Di Samping Sisa Waktu)
         const theadTr = table.querySelector('thead tr');
         if (theadTr && !theadTr.querySelector('.col-keterangan')) {
             const th = document.createElement('th');
             th.className = 'col-keterangan';
-            th.innerText = 'KETERANGAN';
+            th.innerText = 'Keterangan';
             theadTr.appendChild(th);
         }
 
-        // 2. Tambah Sel (TD) di setiap baris
         const rows = table.querySelectorAll('tbody tr');
         rows.forEach(row => {
-            // Lewati baris kosong / "Tidak ada data"
             if (row.cells.length < 5) return;
 
             if (!row.querySelector('.keterangan-cell')) {
                 const td = document.createElement('td');
                 td.className = 'keterangan-cell';
                 td.style.fontWeight = 'bold';
-                td.innerText = '-'; // Default kosong
+                td.innerText = '-';
                 row.appendChild(td);
             }
         });
     }
 
     function highlightWatchlist() {
-        injectKeteranganColumn(); // Pastikan kolom keterangan sudah terbentuk
+        injectKeteranganColumn();
 
         const WATCHLIST_OBJ = getWatchlist();
         const WATCHLIST_IDS = Object.keys(WATCHLIST_OBJ);
@@ -404,7 +392,7 @@
         const rows = document.querySelectorAll('table tbody tr');
 
         rows.forEach((row) => {
-            if (row.cells.length < 5) return; // Ignore empty rows
+            if (row.cells.length < 5) return;
 
             const usernameCell = row.cells[2];
             const toBankCell = row.cells[4];
@@ -447,16 +435,27 @@
                     btnDone.onclick = function(e) {
                         e.stopPropagation();
 
-                        if (confirm(`Hapus ${currentUsername} dari antrean prioritas < 5 menit ? \n\n*Konfirmasi kembali ke Team Livechat!`)) {
+                        if (confirm(`Hapus ${currentUsername} dari antrean prioritas & daftar pantauan? \n\n*Konfirmasi kembali ke Team Livechat!`)) {
+                            // 1. Hapus dari Priority List
                             let updatedPriority = getPriorityList().filter(id => id !== currentUsername);
                             localStorage.setItem('PRIORITY_DATA', JSON.stringify(updatedPriority));
                             PLAYED_ALARMS.delete(currentUsername);
+                            saveCloudData(FILE_PRIORITY, updatedPriority);
 
+                            // 2. Hapus dari Watchlist Data (watchlist_wd.json) jika ada
+                            let currentWatchlist = getWatchlist();
+                            if (currentWatchlist[currentUsername]) {
+                                delete currentWatchlist[currentUsername];
+                                localStorage.setItem('WATCHLIST_DATA', JSON.stringify(currentWatchlist));
+                                saveCloudData(FILE_WATCHLIST, currentWatchlist);
+                            }
+
+                            // 3. Bersihkan UI
                             if(usernameCell.querySelector('.lc-tag')) usernameCell.querySelector('.lc-tag').remove();
                             btnDone.remove();
 
-                            saveCloudData(FILE_PRIORITY, updatedPriority);
                             highlightWatchlist();
+                            renderModalList();
                         }
                     };
                     actionCell.appendChild(btnDone);
@@ -474,7 +473,6 @@
                     toBankCell.style.fontWeight = 'bold';
                 }
 
-                // Masukkan teks Keterangan/Alasan ke kolom Keterangan
                 if (ketCell) {
                     ketCell.innerText = WATCHLIST_OBJ[currentUsername] || "DALAM PANTAUAN";
                     ketCell.style.color = '#cc0000';
@@ -498,7 +496,6 @@
                     if(actionCell && actionCell.querySelector('.btn-done-wd')) actionCell.querySelector('.btn-done-wd').remove();
                 }
 
-                // Kosongkan kolom Keterangan
                 if (ketCell) {
                     ketCell.innerText = '-';
                     ketCell.style.color = 'inherit';
